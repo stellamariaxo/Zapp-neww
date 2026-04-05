@@ -12,6 +12,7 @@ import {
   SPIN_J,
   DIM_V,
 } from "./quantum-engine";
+import { masterSignal } from "./indicators";
 
 // ─── Styles ──────────────────────────────────────────────────────────
 const styles = {
@@ -263,25 +264,28 @@ export default function Page() {
     }
   }, [fetchWithRetry]);
 
-  // ── Run quantum analysis ────────────────────────────────────────
+  // ── Run quantum + SMC analysis ───────────────────────────────────
   const runQuantumAnalysis = useCallback((histories, priceData) => {
     const results = {};
     for (const crypto of CRYPTOS) {
-      const prices = histories[crypto.id];
-      if (prices && prices.length > 1) {
-        results[crypto.id] = quantumSignalAnalysis(prices);
-      } else if (priceData && priceData[crypto.id]) {
-        // Fallback: generate synthetic history from 24h change
+      let prices = histories[crypto.id];
+
+      // Fallback: generate synthetic history from 24h change
+      if ((!prices || prices.length < 2) && priceData && priceData[crypto.id]) {
         const currentPrice = priceData[crypto.id].usd;
         const change24h = priceData[crypto.id].usd_24h_change || 0;
         const prevPrice = currentPrice / (1 + change24h / 100);
-        // Create a simple 24-point synthetic series
-        const synth = [];
-        for (let i = 0; i <= 24; i++) {
-          const t = i / 24;
-          synth.push(prevPrice + (currentPrice - prevPrice) * t + (Math.sin(t * 6) * currentPrice * 0.001));
+        prices = [];
+        for (let i = 0; i <= 48; i++) {
+          const t = i / 48;
+          prices.push(prevPrice + (currentPrice - prevPrice) * t + (Math.sin(t * 8) * currentPrice * 0.002));
         }
-        results[crypto.id] = quantumSignalAnalysis(synth);
+      }
+
+      if (prices && prices.length > 1) {
+        const quantum = quantumSignalAnalysis(prices);
+        const master = masterSignal(prices, quantum);
+        results[crypto.id] = { quantum, master, prices };
       }
     }
     return results;
@@ -652,43 +656,26 @@ export default function Page() {
         {CRYPTOS.map((crypto) => {
           const data = cryptoData[crypto.id];
           const history = priceHistories[crypto.id];
-          const qr = quantumResults[crypto.id];
+          const result = quantumResults[crypto.id];
+          const qr = result?.quantum;
+          const ms = result?.master;
           const change = data?.usd_24h_change;
           const isUp = change >= 0;
 
+          const actionColor = ms?.direction === "BULLISH" ? "#4ade80" : ms?.direction === "BEARISH" ? "#f87171" : "#888";
+          const actionBg = ms?.direction === "BULLISH" ? "rgba(74,222,128," : ms?.direction === "BEARISH" ? "rgba(248,113,113," : "rgba(150,150,150,";
+
           return (
             <div key={crypto.id} style={styles.card}>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "flex-start",
-                  marginBottom: "16px",
-                }}
-              >
+              {/* Price Header */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "12px" }}>
                 <div>
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "10px",
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontSize: "1.4rem",
-                        fontWeight: "800",
-                        color: crypto.color,
-                      }}
-                    >
-                      {crypto.symbol}
-                    </span>
-                    <span style={{ fontSize: "0.85rem", color: "#888" }}>
-                      {crypto.name}
-                    </span>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                    <span style={{ fontSize: "1.4rem", fontWeight: "800", color: crypto.color }}>{crypto.symbol}</span>
+                    <span style={{ fontSize: "0.85rem", color: "#888" }}>{crypto.name}</span>
                   </div>
                   <div style={{ ...styles.price, marginTop: "4px" }}>
-                    {data ? fmt(data.usd) : loading ? "..." : "—"}
+                    {data ? fmt(data.usd) : loading ? "..." : "\u2014"}
                   </div>
                 </div>
                 <div style={{ textAlign: "right" }}>
@@ -698,111 +685,155 @@ export default function Page() {
                     </div>
                   )}
                   {data?.usd_market_cap && (
-                    <div style={{ fontSize: "0.7rem", color: "#666", marginTop: "4px" }}>
-                      MCap: {fmt(data.usd_market_cap, 0)}
-                    </div>
+                    <div style={{ fontSize: "0.7rem", color: "#666", marginTop: "4px" }}>MCap: {fmt(data.usd_market_cap, 0)}</div>
                   )}
                 </div>
               </div>
 
-              {/* Mini sparkline */}
-              <MiniChart prices={history} color={crypto.color} />
+              <MiniChart prices={history || result?.prices} color={crypto.color} />
 
-              {/* LONG / SHORT Signal — BIG & CLEAR */}
+              {/* ══ MASTER SIGNAL — LONG / SHORT / WAIT ══ */}
+              {ms && (
+                <div style={{
+                  marginTop: "16px", padding: "16px", borderRadius: "12px",
+                  background: `${actionBg}0.08)`,
+                  border: `2px solid ${actionBg}0.3)`,
+                }}>
+                  <div style={{ textAlign: "center", marginBottom: "10px" }}>
+                    <div style={{ fontSize: "2.2rem", fontWeight: "900", letterSpacing: "4px", color: actionColor }}>
+                      {ms.action}
+                    </div>
+                    <div style={{ fontSize: "0.7rem", color: "#8888cc", marginTop: "2px" }}>
+                      Quantum + SMC Combined Signal
+                    </div>
+                  </div>
+
+                  {/* Confidence & Agreement */}
+                  <div style={{ display: "flex", gap: "12px", marginBottom: "10px" }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: "0.7rem", color: "#888", marginBottom: "3px" }}>Confidence</div>
+                      <div style={{ fontSize: "1.1rem", fontWeight: "700", color: "#a78bfa" }}>{ms.confidence.toFixed(0)}%</div>
+                      <div style={styles.quantumBar}><div style={styles.quantumFill(ms.confidence / 100, "#a78bfa")} /></div>
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: "0.7rem", color: "#888", marginBottom: "3px" }}>Agreement</div>
+                      <div style={{ fontSize: "1.1rem", fontWeight: "700", color: "#60a5fa" }}>{ms.agreement.toFixed(0)}%</div>
+                      <div style={styles.quantumBar}><div style={styles.quantumFill(ms.agreement / 100, "#60a5fa")} /></div>
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: "0.7rem", color: "#888", marginBottom: "3px" }}>Signals</div>
+                      <div style={{ fontSize: "0.85rem" }}>
+                        <span style={{ color: "#4ade80", fontWeight: "700" }}>{ms.bullishCount}</span>
+                        <span style={{ color: "#666" }}> vs </span>
+                        <span style={{ color: "#f87171", fontWeight: "700" }}>{ms.bearishCount}</span>
+                      </div>
+                      <div style={{ fontSize: "0.6rem", color: "#555" }}>bull / bear</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ══ INDICATORS BREAKDOWN ══ */}
+              {ms && (
+                <div style={{ marginTop: "12px", padding: "12px", borderRadius: "10px", background: "rgba(10,10,30,0.5)", border: "1px solid rgba(100,100,255,0.08)" }}>
+                  <div style={{ fontSize: "0.7rem", color: "#8888cc", letterSpacing: "1px", marginBottom: "8px", textTransform: "uppercase" }}>
+                    Indicator Breakdown
+                  </div>
+
+                  {/* RSI */}
+                  {ms.indicators.rsi.current != null && (
+                    <div style={styles.klRow}>
+                      <span style={{ fontSize: "0.78rem" }}>
+                        <span style={{ color: "#f59e0b", fontWeight: "600" }}>RSI</span>
+                        <span style={{ color: "#888" }}> {ms.indicators.rsi.current.toFixed(1)}</span>
+                      </span>
+                      <span style={{ fontSize: "0.72rem", color: ms.indicators.rsi.score > 0 ? "#4ade80" : ms.indicators.rsi.score < 0 ? "#f87171" : "#888" }}>
+                        {ms.indicators.rsi.current > 70 ? "OVERBOUGHT" : ms.indicators.rsi.current < 30 ? "OVERSOLD" : ms.indicators.rsi.current > 55 ? "BULLISH" : ms.indicators.rsi.current < 45 ? "BEARISH" : "NEUTRAL"}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* MACD */}
+                  {ms.indicators.macd.histogram.length > 0 && (
+                    <div style={styles.klRow}>
+                      <span style={{ fontSize: "0.78rem" }}>
+                        <span style={{ color: "#818cf8", fontWeight: "600" }}>MACD</span>
+                      </span>
+                      <span style={{ fontSize: "0.72rem", color: ms.indicators.macd.score > 0 ? "#4ade80" : ms.indicators.macd.score < 0 ? "#f87171" : "#888" }}>
+                        {ms.indicators.macd.signals[0]?.type || "NEUTRAL"}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* EMA */}
+                  <div style={styles.klRow}>
+                    <span style={{ fontSize: "0.78rem" }}>
+                      <span style={{ color: "#34d399", fontWeight: "600" }}>EMA</span>
+                      <span style={{ color: "#888" }}> 9/21/50/200</span>
+                    </span>
+                    <span style={{ fontSize: "0.72rem", color: ms.indicators.ema.score > 0 ? "#4ade80" : ms.indicators.ema.score < 0 ? "#f87171" : "#888" }}>
+                      {ms.indicators.ema.score > 0 ? "BULLISH" : ms.indicators.ema.score < 0 ? "BEARISH" : "NEUTRAL"}
+                    </span>
+                  </div>
+
+                  {/* FVG */}
+                  <div style={styles.klRow}>
+                    <span style={{ fontSize: "0.78rem" }}>
+                      <span style={{ color: "#fb923c", fontWeight: "600" }}>FVG</span>
+                      <span style={{ color: "#888" }}> ({ms.indicators.fvg.totalGaps || 0} gaps)</span>
+                    </span>
+                    <span style={{ fontSize: "0.72rem", color: ms.indicators.fvg.score > 0 ? "#4ade80" : ms.indicators.fvg.score < 0 ? "#f87171" : "#888" }}>
+                      {ms.indicators.fvg.signals[0]?.type || "NEUTRAL"}
+                    </span>
+                  </div>
+
+                  {/* Liquidity Sweeps */}
+                  <div style={styles.klRow}>
+                    <span style={{ fontSize: "0.78rem" }}>
+                      <span style={{ color: "#f472b6", fontWeight: "600" }}>Liquidity</span>
+                      <span style={{ color: "#888" }}> ({ms.indicators.liquidity.sweeps?.length || 0} sweeps)</span>
+                    </span>
+                    <span style={{ fontSize: "0.72rem", color: ms.indicators.liquidity.score > 0 ? "#4ade80" : ms.indicators.liquidity.score < 0 ? "#f87171" : "#888" }}>
+                      {ms.indicators.liquidity.signals[0]?.type || "NEUTRAL"}
+                    </span>
+                  </div>
+
+                  {/* Order Flow */}
+                  <div style={{ ...styles.klRow, borderBottom: "none" }}>
+                    <span style={{ fontSize: "0.78rem" }}>
+                      <span style={{ color: "#22d3ee", fontWeight: "600" }}>Order Flow</span>
+                      <span style={{ color: "#888" }}> Buy {ms.indicators.orderFlow.buyPressure?.toFixed(0)}%</span>
+                    </span>
+                    <span style={{ fontSize: "0.72rem", color: ms.indicators.orderFlow.score > 0 ? "#4ade80" : ms.indicators.orderFlow.score < 0 ? "#f87171" : "#888" }}>
+                      {ms.indicators.orderFlow.score > 0 ? "BUYERS" : ms.indicators.orderFlow.score < 0 ? "SELLERS" : "BALANCED"}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* ══ DETAILED SIGNALS LIST ══ */}
+              {ms && ms.allSignals.length > 0 && (
+                <div style={{ marginTop: "8px", padding: "10px", borderRadius: "8px", background: "rgba(10,10,30,0.3)" }}>
+                  <div style={{ fontSize: "0.65rem", color: "#666", letterSpacing: "1px", marginBottom: "6px", textTransform: "uppercase" }}>
+                    All Signals
+                  </div>
+                  {ms.allSignals.slice(0, 8).map((sig, i) => (
+                    <div key={i} style={{ fontSize: "0.7rem", padding: "3px 0", display: "flex", alignItems: "center", gap: "6px" }}>
+                      <span style={{
+                        width: "6px", height: "6px", borderRadius: "50%", flexShrink: 0,
+                        background: sig.type === "BULLISH" ? "#4ade80" : sig.type === "BEARISH" ? "#f87171" : "#888",
+                      }} />
+                      <span style={{ color: sig.type === "BULLISH" ? "#4ade80" : sig.type === "BEARISH" ? "#f87171" : "#888" }}>
+                        {sig.msg}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Quantum State (collapsed) */}
               {qr && (
-                <div
-                  style={{
-                    marginTop: "16px",
-                    padding: "16px",
-                    background: qr.direction === "BULLISH"
-                      ? "rgba(74, 222, 128, 0.08)"
-                      : qr.direction === "BEARISH"
-                      ? "rgba(248, 113, 113, 0.08)"
-                      : "rgba(150, 150, 150, 0.08)",
-                    borderRadius: "12px",
-                    border: `1px solid ${
-                      qr.direction === "BULLISH"
-                        ? "rgba(74, 222, 128, 0.25)"
-                        : qr.direction === "BEARISH"
-                        ? "rgba(248, 113, 113, 0.25)"
-                        : "rgba(150, 150, 150, 0.2)"
-                    }`,
-                  }}
-                >
-                  {/* Big LONG/SHORT label */}
-                  <div style={{ textAlign: "center", marginBottom: "12px" }}>
-                    <div
-                      style={{
-                        fontSize: "2rem",
-                        fontWeight: "900",
-                        letterSpacing: "3px",
-                        color:
-                          qr.direction === "BULLISH"
-                            ? "#4ade80"
-                            : qr.direction === "BEARISH"
-                            ? "#f87171"
-                            : "#888",
-                      }}
-                    >
-                      {qr.direction === "BULLISH"
-                        ? "LONG"
-                        : qr.direction === "BEARISH"
-                        ? "SHORT"
-                        : "WAIT"}
-                    </div>
-                    <div
-                      style={{
-                        fontSize: "0.7rem",
-                        color: "#8888cc",
-                        marginTop: "2px",
-                      }}
-                    >
-                      Quantum Signal: {qr.direction}
-                    </div>
-                  </div>
-
-                  {/* Confidence meter */}
-                  <div style={{ fontSize: "0.78rem", marginBottom: "6px" }}>
-                    <span style={{ color: "#888" }}>Signal Strength: </span>
-                    <span style={{ color: "#e0e0ff", fontWeight: "700" }}>
-                      {(qr.strength * 100).toFixed(1)}%
-                    </span>
-                  </div>
-                  <div style={styles.quantumBar}>
-                    <div
-                      style={styles.quantumFill(
-                        qr.strength,
-                        qr.direction === "BULLISH" ? "#4ade80" : "#f87171"
-                      )}
-                    />
-                  </div>
-
-                  <div style={{ fontSize: "0.78rem", marginTop: "8px", marginBottom: "4px" }}>
-                    <span style={{ color: "#888" }}>Confidence: </span>
-                    <span style={{ color: "#a78bfa", fontWeight: "700" }}>
-                      {(qr.confidence * 100).toFixed(1)}%
-                    </span>
-                  </div>
-                  <div style={styles.quantumBar}>
-                    <div style={styles.quantumFill(qr.confidence, "#a78bfa")} />
-                  </div>
-
-                  <div style={{ fontSize: "0.78rem", marginTop: "8px" }}>
-                    <span style={{ color: "#888" }}>Error Leakage: </span>
-                    <span
-                      style={{
-                        color: qr.errorLeakage > 0.5 ? "#f59e0b" : "#4ade80",
-                      }}
-                    >
-                      {(qr.errorLeakage * 100).toFixed(1)}%
-                    </span>
-                  </div>
-
-                  <div style={{ fontSize: "0.7rem", marginTop: "8px", color: "#666" }}>
-                    &#x03B1;={qr.alpha.toFixed(4)} (|0&#x0304;&#x27E9;) &nbsp;
-                    &#x03B2;={qr.beta.toFixed(4)} (|1&#x0304;&#x27E9;)
-                  </div>
-
+                <div style={{ marginTop: "8px" }}>
                   <WeightStateViz analysis={qr} />
                 </div>
               )}
