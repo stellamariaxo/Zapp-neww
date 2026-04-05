@@ -199,9 +199,6 @@ const CRYPTOS = [
   { id: "hyperliquid", symbol: "HYPE", name: "Hyperliquid", color: "#00d4aa" },
 ];
 
-const COINGECKO_API =
-  "https://api.coingecko.com/api/v3";
-
 // ─── Main Component ──────────────────────────────────────────────────
 export default function Page() {
   const [cryptoData, setCryptoData] = useState({});
@@ -214,55 +211,18 @@ export default function Page() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const intervalRef = useRef(null);
 
-  // ── Fetch with retry ─────────────────────────────────────────────
-  const fetchWithRetry = useCallback(async (url, retries = 2) => {
-    for (let i = 0; i <= retries; i++) {
-      try {
-        const res = await fetch(url, {
-          headers: { "Accept": "application/json" },
-        });
-        if (res.status === 429) {
-          // Rate limited, wait and retry
-          await new Promise((r) => setTimeout(r, (i + 1) * 2000));
-          continue;
-        }
-        if (!res.ok) throw new Error(`API ${res.status}`);
-        return await res.json();
-      } catch (err) {
-        if (i === retries) throw err;
-        await new Promise((r) => setTimeout(r, (i + 1) * 1000));
-      }
+  // ── Fetch all data from our server-side API proxy ────────────────
+  const fetchAllData = useCallback(async () => {
+    try {
+      const res = await fetch("/api/crypto");
+      if (!res.ok) throw new Error(`API ${res.status}`);
+      return await res.json();
+    } catch (err) {
+      console.error("Fetch error:", err);
+      setError("Failed to fetch crypto data. Retrying...");
+      return null;
     }
-    return null;
   }, []);
-
-  // ── Fetch current prices ────────────────────────────────────────
-  const fetchPrices = useCallback(async () => {
-    try {
-      const data = await fetchWithRetry(
-        `${COINGECKO_API}/simple/price?ids=bitcoin,ethereum,hyperliquid&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true&include_market_cap=true`
-      );
-      return data;
-    } catch (err) {
-      console.error("Price fetch error:", err);
-      setError("CoinGecko API rate limited. Prices will load on next refresh.");
-      return null;
-    }
-  }, [fetchWithRetry]);
-
-  // ── Fetch price history (7 days) ────────────────────────────────
-  const fetchHistory = useCallback(async (coinId) => {
-    try {
-      const data = await fetchWithRetry(
-        `${COINGECKO_API}/coins/${coinId}/market_chart?vs_currency=usd&days=7`
-      );
-      if (data && data.prices) return data.prices.map((p) => p[1]);
-      return null;
-    } catch (err) {
-      console.error(`History fetch error for ${coinId}:`, err);
-      return null;
-    }
-  }, [fetchWithRetry]);
 
   // ── Run quantum + SMC analysis ───────────────────────────────────
   const runQuantumAnalysis = useCallback((histories, priceData) => {
@@ -297,39 +257,26 @@ export default function Page() {
     setError(null);
 
     try {
-      // Fetch prices and histories in parallel
-      const [priceData, btcHist, ethHist, hypeHist] = await Promise.all([
-        fetchPrices(),
-        fetchHistory("bitcoin"),
-        fetchHistory("ethereum"),
-        fetchHistory("hyperliquid"),
-      ]);
+      const data = await fetchAllData();
 
-      if (priceData) {
-        setCryptoData(priceData);
+      if (data && data.prices) {
+        setCryptoData(data.prices);
+        setPriceHistories(data.histories || {});
+
+        // Run quantum + SMC analysis
+        const qResults = runQuantumAnalysis(data.histories || {}, data.prices);
+        setQuantumResults(qResults);
       }
-
-      const histories = {};
-      if (btcHist) histories.bitcoin = btcHist;
-      if (ethHist) histories.ethereum = ethHist;
-      if (hypeHist) histories.hyperliquid = hypeHist;
-
-      setPriceHistories(histories);
-
-      // Run quantum analysis (with priceData fallback)
-      const qResults = runQuantumAnalysis(histories, priceData);
-      setQuantumResults(qResults);
 
       // Run KL verification
       setKlStatus(fullKLVerification());
-
       setLastUpdate(new Date());
     } catch (err) {
       setError(err.message);
     }
 
     setLoading(false);
-  }, [fetchPrices, fetchHistory, runQuantumAnalysis]);
+  }, [fetchAllData, runQuantumAnalysis]);
 
   // ── Auto-refresh every 60s ──────────────────────────────────────
   useEffect(() => {
