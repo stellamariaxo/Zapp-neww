@@ -213,35 +213,55 @@ export default function Page() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const intervalRef = useRef(null);
 
+  // ── Fetch with retry ─────────────────────────────────────────────
+  const fetchWithRetry = useCallback(async (url, retries = 2) => {
+    for (let i = 0; i <= retries; i++) {
+      try {
+        const res = await fetch(url, {
+          headers: { "Accept": "application/json" },
+        });
+        if (res.status === 429) {
+          // Rate limited, wait and retry
+          await new Promise((r) => setTimeout(r, (i + 1) * 2000));
+          continue;
+        }
+        if (!res.ok) throw new Error(`API ${res.status}`);
+        return await res.json();
+      } catch (err) {
+        if (i === retries) throw err;
+        await new Promise((r) => setTimeout(r, (i + 1) * 1000));
+      }
+    }
+    return null;
+  }, []);
+
   // ── Fetch current prices ────────────────────────────────────────
   const fetchPrices = useCallback(async () => {
     try {
-      const res = await fetch(
+      const data = await fetchWithRetry(
         `${COINGECKO_API}/simple/price?ids=bitcoin,ethereum,hyperliquid&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true&include_market_cap=true`
       );
-      if (!res.ok) throw new Error(`API ${res.status}`);
-      const data = await res.json();
       return data;
     } catch (err) {
       console.error("Price fetch error:", err);
+      setError("CoinGecko API rate limited. Prices will load on next refresh.");
       return null;
     }
-  }, []);
+  }, [fetchWithRetry]);
 
   // ── Fetch price history (7 days) ────────────────────────────────
   const fetchHistory = useCallback(async (coinId) => {
     try {
-      const res = await fetch(
+      const data = await fetchWithRetry(
         `${COINGECKO_API}/coins/${coinId}/market_chart?vs_currency=usd&days=7`
       );
-      if (!res.ok) throw new Error(`History API ${res.status}`);
-      const data = await res.json();
-      return data.prices.map((p) => p[1]); // Extract price values
+      if (data && data.prices) return data.prices.map((p) => p[1]);
+      return null;
     } catch (err) {
       console.error(`History fetch error for ${coinId}:`, err);
       return null;
     }
-  }, []);
+  }, [fetchWithRetry]);
 
   // ── Run quantum analysis ────────────────────────────────────────
   const runQuantumAnalysis = useCallback((histories, priceData) => {
