@@ -812,7 +812,7 @@ export default function Page() {
           marginTop: "20px",
         }}
       >
-        ZAPP Quantum Crypto Tracker — Stella Z {{"{"}7, 2, 2{"}"}_SU(2) Engine
+        {"ZAPP Quantum Crypto Tracker — Stella Z {{7, 2, 2}}_SU(2) Engine"}
         <br />
         Market data from CoinGecko API | Quantum analysis is experimental and not financial advice
       </footer>
