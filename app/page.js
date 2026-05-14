@@ -563,6 +563,17 @@ export default function Page() {
           <button style={styles.refreshBtn} onClick={refresh} disabled={loading}>
             {loading ? "Analyzing..." : "Refresh & Analyze"}
           </button>
+          <a
+            href="/learn"
+            style={{
+              background: "linear-gradient(135deg, #58CC02, #1CB0F6)",
+              color: "#fff", padding: "10px 20px", borderRadius: "10px",
+              fontSize: "0.9rem", fontWeight: "700", textDecoration: "none",
+              display: "inline-flex", alignItems: "center", gap: "6px",
+            }}
+          >
+            🧠 ZappLearn
+          </a>
           <label
             style={{ fontSize: "0.8rem", color: "#8888cc", cursor: "pointer" }}
           >

@@ -3,110 +3,164 @@ import { NextResponse } from "next/server";
 
 const client = new Anthropic();
 
-const SYSTEM_PROMPT = `You are an expert educational content creator who specializes in making learning fun and engaging, similar to Duolingo or Google's Learn My Way.
+const DIFFICULTY_GUIDE = {
+  kids: `
+- Audience: children aged 6–11
+- Use very simple words; never more than 2 syllables unless necessary
+- Short sentences (max 15 words each)
+- Heavy use of relatable analogies (toys, games, animals, food)
+- Story cards should feel like a fairy tale
+- Quiz options should be clearly worded, no trick questions`,
 
-Your task: Transform the provided educational material into an engaging, easy-to-understand interactive course.
+  beginner: `
+- Audience: teenagers aged 12–15 or adult beginners
+- Clear, friendly language; avoid jargon or always define it
+- Medium sentence length; some analogies still helpful
+- Examples from everyday life and popular culture`,
 
-IMPORTANT: Generate ALL content in the specified language. If the language is Indonesian, write in Indonesian. If Spanish, write in Spanish. Etc.
+  intermediate: `
+- Audience: students aged 16–18 or self-learners
+- Balanced mix of accessible language and proper terminology
+- Explanations can assume basic literacy in the subject
+- Examples can include more domain-specific scenarios`,
 
-Return ONLY a valid JSON object with this exact structure (no markdown, no code blocks, just raw JSON):
+  advanced: `
+- Audience: university students or professionals learning a new area
+- Use correct academic/industry terminology throughout
+- Explanations can include nuance, edge cases, and comparisons
+- Quiz questions should require synthesis, not just recall`,
+
+  expert: `
+- Audience: specialists, researchers, or professional practitioners
+- Precise, technical language is expected and required
+- Assume high prior knowledge; go deep, not wide
+- Include counterarguments, limitations, or research context where relevant
+- Quiz questions should test critical evaluation and application`,
+};
+
+const BASE_SYSTEM = `You are an expert instructional designer who creates world-class interactive learning experiences — like Duolingo, Khan Academy, and Google's Learn My Way combined.
+
+Your task: Transform the provided raw educational material into a fully structured interactive course.
+
+CRITICAL RULES:
+1. Generate ALL text content in the specified language. English material → output in target language.
+2. Return ONLY raw JSON — no markdown fences, no commentary, no preamble.
+3. Keep card content concise but rich: 2–4 sentences per card.
+4. Story cards MUST use first-person or narrative style ("Imagine you are…", "Meet Alex, who…").
+5. Example cards MUST show concrete, real-world scenarios with specifics.
+6. Tip cards MUST give immediately actionable, practical advice.
+7. Quiz correct answers should rotate positions (not always index 0 or 1).
+8. All four quiz options must be plausible — avoid obviously wrong decoys.
+
+OUTPUT JSON SCHEMA (return exactly this structure):
 {
-  "courseTitle": "string - catchy course title",
-  "courseDescription": "string - 1-2 sentence description of what students will learn",
-  "emoji": "string - single emoji representing the topic",
-  "color": "string - one of: #6366f1, #ec4899, #f59e0b, #10b981, #3b82f6, #8b5cf6, #ef4444, #06b6d4",
+  "courseTitle": "string",
+  "courseDescription": "string (1–2 sentences, engaging, describes what learner gains)",
+  "emoji": "string (1 emoji representing the subject)",
+  "color": "string (pick one: #6366f1 | #ec4899 | #f59e0b | #10b981 | #3b82f6 | #8b5cf6 | #ef4444 | #06b6d4 | #14b8a6 | #f97316)",
   "sections": [
     {
       "id": 1,
-      "title": "string - section title",
+      "title": "string",
       "cards": [
         {
           "id": 1,
-          "type": "story|explanation|example|tip",
-          "title": "string - card title",
-          "content": "string - main explanation (2-4 sentences, conversational, engaging)",
-          "emoji": "string - single relevant emoji",
-          "highlight": "string - one key phrase or concept to emphasize (max 8 words)",
-          "visual": "string - describe a simple illustration or diagram that would help explain this concept (1 sentence)"
+          "type": "story | explanation | example | tip",
+          "emoji": "string (1 relevant emoji)",
+          "title": "string (catchy card title)",
+          "content": "string (2–4 sentences, engaging and educational)",
+          "highlight": "string (the single most important takeaway, ≤ 10 words)",
+          "visual": "string (describe a simple illustration/diagram that would clarify this concept, 1 sentence)"
         }
       ],
       "quiz": [
         {
           "id": 1,
-          "question": "string - clear question about the section content",
+          "question": "string (tests understanding, not just recall)",
           "options": ["string", "string", "string", "string"],
           "correct": 0,
-          "explanation": "string - brief explanation of why this answer is correct (1-2 sentences)"
+          "explanation": "string (explains WHY this answer is correct, 1–2 sentences)"
         }
       ]
     }
   ]
-}
-
-Rules:
-- Create 2-4 sections, each covering a distinct aspect of the topic
-- Each section: 3-5 cards + 3-4 quiz questions
-- Card types should vary: start with story for context, add explanation for concepts, example for clarity, tip for practical use
-- Story cards: use narrative/storytelling format ("Imagine you are...", "Once there was...")
-- Example cards: show concrete real-world examples
-- Tip cards: practical advice students can immediately use
-- Quiz questions should test understanding, not just recall
-- Make content engaging, fun, and accessible
-- Use simple language appropriate for general learners`;
+}`;
 
 export async function POST(request) {
   try {
-    const { content, language, title } = await request.json();
+    const body = await request.json();
+    const { content, language, title, difficulty = "beginner" } = body;
 
     if (!content || content.trim().length < 20) {
       return NextResponse.json(
-        { success: false, error: "Content too short. Please provide more material." },
+        { success: false, error: "Content too short. Please provide at least a paragraph of material." },
         { status: 400 }
       );
     }
 
+    const diffGuide = DIFFICULTY_GUIDE[difficulty] || DIFFICULTY_GUIDE.beginner;
+    const userPrompt = `Target Language: ${language || "English"}
+Difficulty Level: ${difficulty}
+${diffGuide}
+
+Course Title (suggested): ${title || "Untitled Course"}
+
+--- MATERIAL TO TRANSFORM ---
+${content.slice(0, 8000)}
+--- END MATERIAL ---
+
+Now generate the full course JSON. Remember: output ONLY raw JSON.`;
+
     const message = await client.messages.create({
       model: "claude-opus-4-7",
-      max_tokens: 4096,
-      system: SYSTEM_PROMPT,
-      messages: [
+      max_tokens: 5000,
+      system: [
         {
-          role: "user",
-          content: `Language to use for ALL content: ${language || "English"}
-
-Course Title: ${title || "Untitled Course"}
-
-Material to transform:
-${content.slice(0, 8000)}`,
+          type: "text",
+          text: BASE_SYSTEM,
+          cache_control: { type: "ephemeral" },
         },
       ],
+      messages: [{ role: "user", content: userPrompt }],
     });
 
-    const responseText = message.content[0].text.trim();
-    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    const raw = message.content[0].text.trim();
+
+    // Extract JSON — handle cases where the model wraps in markdown
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
-      throw new Error("Could not parse AI response as JSON");
+      console.error("Non-JSON response from AI:", raw.slice(0, 300));
+      throw new Error("AI returned unexpected format. Please try again.");
     }
 
-    const course = JSON.parse(jsonMatch[0]);
-    course.id = Date.now().toString();
-    course.createdAt = new Date().toISOString();
-    course.progress = {};
+    let course;
+    try {
+      course = JSON.parse(jsonMatch[0]);
+    } catch {
+      throw new Error("Failed to parse AI response as JSON. Please try again.");
+    }
+
+    // Validate minimum shape
+    if (!course.sections || !Array.isArray(course.sections) || course.sections.length === 0) {
+      throw new Error("AI generated an empty course. Please provide more detailed material.");
+    }
+
+    // Attach server-side metadata
+    course.id         = Date.now().toString();
+    course.createdAt  = new Date().toISOString();
+    course.progress   = {};
+    course.difficulty = difficulty;
 
     return NextResponse.json({ success: true, course });
   } catch (error) {
-    console.error("Learn API error:", error);
+    console.error("Learn API error:", error.message);
 
-    if (error.status === 401) {
-      return NextResponse.json(
-        { success: false, error: "Invalid API key. Please set ANTHROPIC_API_KEY." },
-        { status: 401 }
-      );
-    }
+    const status = error.status === 401 ? 401 : 500;
+    const msg =
+      error.status === 401
+        ? "Invalid API key. Set ANTHROPIC_API_KEY in .env.local."
+        : error.message || "Failed to generate course. Please try again.";
 
-    return NextResponse.json(
-      { success: false, error: error.message || "Failed to generate course" },
-      { status: 500 }
-    );
+    return NextResponse.json({ success: false, error: msg }, { status });
   }
 }
